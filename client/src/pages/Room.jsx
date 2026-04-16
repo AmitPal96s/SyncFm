@@ -13,7 +13,11 @@ import ToastContainer from '../components/ToastContainer';
 export default function Room() {
   const { code } = useParams();
   const [searchParams] = useSearchParams();
-  const [username] = useState(searchParams.get('username') || 'Anonymous');
+  const [username] = useState(
+    searchParams.get('username') || 
+    localStorage.getItem('syncfm_username') || 
+    'Anonymous'
+  );
   const [toasts, setToasts] = useState([]);
   const navigate = useNavigate();
   const socket = useSocket();

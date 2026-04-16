@@ -39,7 +39,8 @@ function App() {
 
         const codePart = state.split("_")[1];
         if (codePart) {
-          navigate(`/room/${codePart}`, { replace: true });
+          const savedUsername = localStorage.getItem('syncfm_username') || 'Guest';
+          navigate(`/room/${codePart}?username=${encodeURIComponent(savedUsername)}`, { replace: true });
         }
       }
     }

@@ -41,6 +41,7 @@ export default function Landing() {
   const handleJoin = (e) => {
     e.preventDefault();
     if (!username || !roomCode) return;
+    localStorage.setItem('syncfm_username', username);
     navigate(`/room/${roomCode}?username=${encodeURIComponent(username)}`);
   };
 
@@ -56,6 +57,7 @@ export default function Landing() {
       });
       const data = await response.json();
       if (data.success) {
+        localStorage.setItem('syncfm_username', username);
         navigate(`/room/${data.room.code}?username=${encodeURIComponent(username)}`);
       }
     } catch (err) {
