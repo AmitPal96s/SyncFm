@@ -1,0 +1,9 @@
+{
+  "name": "syncfm-root",
+  "version": "1.0.0",
+  "description": "Root package runner for Sync.fm",
+  "scripts": {
+    "install:all": "cd server && npm install && cd ../client && npm install",
+    "dev": "npx concurrently \"cd server && npm start\" \"cd client && npm run dev\""
+  }
+}
