@@ -12,11 +12,13 @@
   },
   "dependencies": {
     "@tailwindcss/vite": "^4.2.2",
+    "axios": "^1.15.0",
     "clsx": "^2.1.1",
     "framer-motion": "^12.38.0",
     "lucide-react": "^1.8.0",
     "react": "^19.2.4",
     "react-dom": "^19.2.4",
+    "react-hot-toast": "^2.6.0",
     "react-router": "^7.14.1",
     "react-router-dom": "^7.14.1",
     "react-youtube": "^10.1.0",

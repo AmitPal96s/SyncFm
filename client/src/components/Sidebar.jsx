@@ -1,3 +1,4 @@
+import { useState, useEffect } from 'react';
 import { useSocket } from '../context/SocketContext';
 import { Users, X } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';

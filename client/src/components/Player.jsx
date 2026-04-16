@@ -1,5 +1,18 @@
+import { useState, useEffect, useRef } from 'react';
 import YouTube from 'react-youtube';
 import { motion, useReducedMotion, AnimatePresence } from 'framer-motion';
+import { 
+  ChevronUp, 
+  ChevronDown, 
+  SkipBack, 
+  Pause, 
+  Play, 
+  SkipForward, 
+  Radio, 
+  Shuffle, 
+  Repeat 
+} from 'lucide-react';
+import { useSocket } from '../context/SocketContext';
 import EqualizerBars from './EqualizerBars';
 
 export default function Player({ roomData, code, isExpanded, setIsExpanded, onQueueUpdate, isAdmin }) {

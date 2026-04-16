@@ -1,7 +1,11 @@
+import { Routes, Route, useLocation, useNavigate } from 'react-router-dom';
 import Landing from './pages/Landing';
 import Room from './pages/Room';
+import Profile from './pages/Profile';
+import PrivateRoute from './components/PrivateRoute';
 import { useEffect, useState } from 'react';
 import { AnimatePresence } from 'framer-motion';
+import { Toaster } from 'react-hot-toast';
 import LoadingScreen from './components/LoadingScreen';
 import PageTransition from './components/PageTransition';
 
@@ -43,6 +47,7 @@ function App() {
 
   return (
     <div className="min-h-screen bg-black text-white selection:bg-purple-500/30">
+      <Toaster position="top-right" />
       <LoadingScreen isLoading={isLoading} />
       
       <div className="relative z-10 w-full h-full min-h-screen">
@@ -57,6 +62,13 @@ function App() {
               <PageTransition>
                 <Room />
               </PageTransition>
+            } />
+            <Route path="/profile" element={
+              <PrivateRoute>
+                <PageTransition>
+                  <Profile />
+                </PageTransition>
+              </PrivateRoute>
             } />
           </Routes>
         </AnimatePresence>

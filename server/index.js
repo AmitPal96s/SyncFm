@@ -11,10 +11,25 @@ const path = require('path');
 const Room = require('./models/Room');
 const setupRoomSockets = require('./sockets/roomHandler');
 
+const authRoutes = require('./routes/auth');
+const userRoutes = require('./routes/users');
+
 const app = express();
-app.use(cors());
+app.use(cors({
+  origin: [
+    'http://localhost:5173',
+    'http://localhost:5000',
+    /\.vercel\.app$/ // Allow all Vercel deployments
+  ],
+  methods: ['GET', 'POST', 'PUT', 'DELETE'],
+  credentials: true
+}));
 app.use(express.json());
 app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
+
+app.use('/api/auth', authRoutes);
+app.use('/api/users', userRoutes);
+app.get('/health', (req, res) => res.status(200).json({ status: 'ok', uptime: process.uptime() }));
 
 // Configure Multer
 const storage = multer.diskStorage({

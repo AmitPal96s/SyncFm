@@ -94,3 +94,41 @@ export const listItem = {
   exit: { opacity: 0, scale: 0.95, transition: { duration: 0.2 } },
   transition: { type: 'spring', damping: 25, stiffness: 300 }
 };
+
+/**
+ * Custom Profile/User specific variants
+ */
+export const collapseOut = {
+  initial: { opacity: 1, x: 0, height: 'auto' },
+  exit: { 
+    opacity: 0, 
+    x: -30, 
+    height: 0, 
+    marginBottom: 0,
+    paddingTop: 0,
+    paddingBottom: 0,
+    transition: { 
+      duration: 0.4, 
+      ease: [0.4, 0, 0.2, 1],
+      opacity: { duration: 0.2 }
+    } 
+  }
+};
+
+export const slideUpBar = {
+  initial: { y: 80, opacity: 0 },
+  animate: { 
+    y: 0, 
+    opacity: 1,
+    transition: { 
+      type: 'spring', 
+      damping: 20, 
+      stiffness: 150 
+    } 
+  },
+  exit: { 
+    y: 80, 
+    opacity: 0,
+    transition: { duration: 0.2, ease: 'easeIn' }
+  }
+};

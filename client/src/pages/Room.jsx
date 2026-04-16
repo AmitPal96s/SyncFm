@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react';
 import { useParams, useSearchParams, useNavigate } from 'react-router-dom';
 import { useSocket } from '../context/SocketContext';
 import { motion, AnimatePresence } from 'framer-motion';
-import { LogOut, Copy, Check, Search, Music, MessageCircle, Trash2, Share2 } from 'lucide-react';
+import { LogOut, Copy, Check, Search, Music, MessageCircle, Trash2, Share2, User } from 'lucide-react';
 import Player from '../components/Player';
 import Sidebar from '../components/Sidebar';
 import Chat from '../components/Chat';
@@ -199,6 +199,17 @@ export default function Room() {
             className="p-2 hover:bg-white/5 rounded-full transition-colors text-indigo-400"
           >
             {copied ? <Check size={20} /> : <Share2 size={20} />}
+          </motion.button>
+
+          <motion.button 
+            whileHover={{ scale: 1.1, backgroundColor: 'rgba(255,255,255,0.1)' }}
+            whileTap={{ scale: 0.9 }}
+            onClick={() => navigate('/profile')} 
+            className="p-1 px-1.5 md:p-2 hover:bg-white/5 rounded-full transition-colors text-white border border-white/10"
+          >
+            <div className="w-5 h-5 md:w-6 md:h-6 rounded-full bg-indigo-600 flex items-center justify-center overflow-hidden">
+               <User size={14} className="text-white" />
+            </div>
           </motion.button>
         </div>
       </header>
