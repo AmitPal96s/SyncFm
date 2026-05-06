@@ -15,36 +15,62 @@ const BOT_MESSAGES = [
 module.exports = (io) => {
   // Store connected users locally for quick reference
   const users = {};
+  
+  // In-memory playback state
+  const roomsState = {};
 
   io.on('connection', (socket) => {
     console.log(`User connected: ${socket.id}`);
 
     // Join a specific room
-    socket.on('join_room', async ({ code, username, avatar }) => {
-      socket.join(code);
-      users[socket.id] = { code, username, avatar };
+    socket.on('join-room', async ({ roomCode, userId, username, avatar }) => {
+      socket.join(roomCode);
+      users[socket.id] = { code: roomCode, userId, username, avatar };
       
       try {
-        const room = await Room.findOne({ code });
+        const room = await Room.findOne({ code: roomCode });
         if (room) {
           // Check if user already exists
           const exists = room.attendees.find(a => a.socketId === socket.id);
           if (!exists) {
-            room.attendees.push({ socketId: socket.id, username, avatar });
+            room.attendees.push({ socketId: socket.id, userId, username: username || 'Guest', avatar });
             await room.save();
           }
           
-          // Broadcast to others in the room
-          socket.to(code).emit('user_joined', { socketId: socket.id, username, avatar });
-          
-          // Send current state to the joining user
-          socket.emit('room_state', {
+          const isHost = userId && room.host.toString() === userId.toString();
+          const role = isHost ? 'host' : 'guest';
+
+          // Initialize room state if empty
+          if (!roomsState[roomCode]) {
+            roomsState[roomCode] = {
+              playbackState: {
+                isPlaying: room.isPlaying,
+                currentTime: room.playbackPosition,
+                lastUpdated: Date.now(),
+                currentTrackIndex: room.currentTrackIndex
+              }
+            };
+          }
+
+          const state = roomsState[roomCode].playbackState;
+          const elapsed = state.isPlaying ? (Date.now() - state.lastUpdated) / 1000 : 0;
+          const adjustedCurrentTime = state.currentTime + elapsed;
+
+          socket.emit('room-joined', {
+            roomId: room._id,
+            role,
+            hostId: room.host.toString(),
+            playbackState: {
+              ...state,
+              currentTime: adjustedCurrentTime,
+              serverTimestamp: Date.now()
+            },
             attendees: room.attendees,
-            currentTrackIndex: room.currentTrackIndex,
-            playbackPosition: room.playbackPosition,
-            isPlaying: room.isPlaying,
-            timestamp: Date.now()
+            queue: room.queue
           });
+
+          // Broadcast to others in the room
+          socket.to(roomCode).emit('user-joined', { socketId: socket.id, userId, role, username, avatar });
 
           // Fetch previous messages
           const msgs = await Message.find({ roomId: room._id }).sort({ createdAt: 1 }).limit(50);
@@ -55,30 +81,113 @@ module.exports = (io) => {
       }
     });
 
-    // Player Sync (Strict Host Source of Truth)
-    socket.on('player_update', async ({ code, currentTrackIndex, playbackPosition, isPlaying }) => {
+    // Playback explicit controls
+    socket.on('play', async ({ currentTime, currentTrackIndex }) => {
       const user = users[socket.id];
       if (!user) return;
-
+      
       try {
-        const room = await Room.findOne({ code });
-        if (!room || room.adminUsername !== user.username) return; // Strict Host enforcement
+        const room = await Room.findOne({ code: user.code });
+        if (!room || room.host.toString() !== user.userId?.toString()) return; // Host only
 
-        socket.to(code).emit('sync_playback', { 
-          currentTrackIndex, 
-          playbackPosition, 
-          isPlaying, 
-          timestamp: Date.now() 
-        });
+        const now = Date.now();
+        if (!roomsState[user.code]) roomsState[user.code] = { playbackState: {} };
         
-        await Room.updateOne({ code }, {
-          currentTrackIndex,
-          playbackPosition,
-          isPlaying
+        roomsState[user.code].playbackState = {
+          isPlaying: true,
+          currentTime,
+          lastUpdated: now,
+          currentTrackIndex: currentTrackIndex !== undefined ? currentTrackIndex : roomsState[user.code].playbackState.currentTrackIndex
+        };
+
+        io.to(user.code).emit('play', { 
+          currentTime, 
+          serverTimestamp: now,
+          currentTrackIndex: roomsState[user.code].playbackState.currentTrackIndex
         });
-      } catch (err) {
-        console.error(err);
-      }
+
+        await Room.updateOne({ code: user.code }, { isPlaying: true, playbackPosition: currentTime });
+      } catch (err) { console.error(err); }
+    });
+
+    socket.on('pause', async ({ currentTime }) => {
+      const user = users[socket.id];
+      if (!user) return;
+      
+      try {
+        const room = await Room.findOne({ code: user.code });
+        if (!room || room.host.toString() !== user.userId?.toString()) return; // Host only
+
+        const now = Date.now();
+        if (roomsState[user.code]) {
+          roomsState[user.code].playbackState.isPlaying = false;
+          roomsState[user.code].playbackState.currentTime = currentTime;
+          roomsState[user.code].playbackState.lastUpdated = now;
+        }
+
+        io.to(user.code).emit('pause', { currentTime });
+        await Room.updateOne({ code: user.code }, { isPlaying: false, playbackPosition: currentTime });
+      } catch (err) { console.error(err); }
+    });
+
+    socket.on('seek', async ({ currentTime }) => {
+      const user = users[socket.id];
+      if (!user) return;
+      
+      try {
+        const room = await Room.findOne({ code: user.code });
+        if (!room || room.host.toString() !== user.userId?.toString()) return; // Host only
+
+        const now = Date.now();
+        if (roomsState[user.code]) {
+          roomsState[user.code].playbackState.currentTime = currentTime;
+          roomsState[user.code].playbackState.lastUpdated = now;
+        }
+
+        io.to(user.code).emit('seek', { currentTime, serverTimestamp: now });
+        await Room.updateOne({ code: user.code }, { playbackPosition: currentTime });
+      } catch (err) { console.error(err); }
+    });
+
+    socket.on('replay', async ({ currentTrackIndex }) => {
+      const user = users[socket.id];
+      if (!user) return;
+      
+      try {
+        const room = await Room.findOne({ code: user.code });
+        if (!room || room.host.toString() !== user.userId?.toString()) return; // Host only
+
+        const now = Date.now();
+        if (!roomsState[user.code]) roomsState[user.code] = { playbackState: {} };
+        
+        roomsState[user.code].playbackState = {
+          isPlaying: true,
+          currentTime: 0,
+          lastUpdated: now,
+          currentTrackIndex: currentTrackIndex !== undefined ? currentTrackIndex : roomsState[user.code].playbackState.currentTrackIndex
+        };
+
+        io.to(user.code).emit('replay', { 
+          currentTime: 0, 
+          serverTimestamp: now,
+          currentTrackIndex: roomsState[user.code].playbackState.currentTrackIndex
+        });
+        await Room.updateOne({ code: user.code }, { isPlaying: true, playbackPosition: 0, currentTrackIndex: roomsState[user.code].playbackState.currentTrackIndex });
+      } catch (err) { console.error(err); }
+    });
+
+    socket.on('request-sync', ({ roomId }) => {
+      const user = users[socket.id];
+      if (!user || !roomsState[user.code]) return;
+      
+      const state = roomsState[user.code].playbackState;
+      const elapsed = state.isPlaying ? (Date.now() - state.lastUpdated) / 1000 : 0;
+      
+      socket.emit('sync-state', {
+        ...state,
+        currentTime: state.currentTime + elapsed,
+        serverTimestamp: Date.now()
+      });
     });
 
     // Add to Queue (Admin Only)
@@ -88,13 +197,7 @@ module.exports = (io) => {
 
       try {
         const room = await Room.findOne({ code });
-        if (!room) return;
-
-        // Authorization check
-        if (room.adminUsername !== user.username) {
-          socket.emit('error', 'Only the host can add tracks to the queue.');
-          return;
-        }
+        if (!room || room.host.toString() !== user.userId?.toString()) return;
 
         room.queue.push(track);
         await room.save();
@@ -111,13 +214,7 @@ module.exports = (io) => {
 
       try {
         const room = await Room.findOne({ code });
-        if (!room) return;
-
-        // Authorization check
-        if (room.adminUsername !== user.username) {
-          socket.emit('error', 'Only the host can remove tracks from the queue.');
-          return;
-        }
+        if (!room || room.host.toString() !== user.userId?.toString()) return;
 
         room.queue = room.queue.filter(t => t.id !== trackId);
         await room.save();
@@ -138,7 +235,7 @@ module.exports = (io) => {
 
         const msg = new Message({
           roomId: room._id,
-          sender: user.username,
+          sender: user.username || 'Guest',
           text
         });
         await msg.save();
@@ -155,28 +252,21 @@ module.exports = (io) => {
     });
 
     // Admin Kick User
-    socket.on('kick_user', async ({ code, targetSocketId, adminUsername }) => {
+    socket.on('kick_user', async ({ code, targetSocketId }) => {
+      const user = users[socket.id];
+      if (!user) return;
+
       try {
         const room = await Room.findOne({ code });
-        if (!room) return;
-        
-        // Primitive security check: verify the issuer matches the room's admin record
-        if (room.adminUsername !== adminUsername) {
-          console.log(`Unauthorized kick attempt by ${adminUsername}`);
-          return;
-        }
+        if (!room || room.host.toString() !== user.userId?.toString()) return;
 
         // Remove from DB
         room.attendees = room.attendees.filter(a => a.socketId !== targetSocketId);
         await room.save();
 
-        // Send a targeted event to the victim socket
         io.to(targetSocketId).emit('kicked');
-
-        // Broadcast to the rest of the room that the user left (to clear the Sidebar)
         io.to(code).emit('user_left', targetSocketId);
         
-        // Clean up server-side reference if it exists
         if (users[targetSocketId]) {
           delete users[targetSocketId];
         }
@@ -190,7 +280,6 @@ module.exports = (io) => {
       console.log(`User disconnected: ${socket.id}`);
       const user = users[socket.id];
       if (user) {
-        // Remove from db
         try {
           const room = await Room.findOne({ code: user.code });
           if (room) {
@@ -212,18 +301,14 @@ module.exports = (io) => {
       const activeRoomsCount = io.sockets.adapter.rooms.size;
       if (activeRoomsCount === 0) return;
 
-      // For every active room in socket namespace
       for (const [roomCode, sockets] of io.sockets.adapter.rooms.entries()) {
-        // Socket.io room id is either actual room string or socket.id. Filter out socket ids.
-        if (roomCode.length !== 4) continue; // Our codes are 4 digits
+        if (roomCode.length !== 4) continue; 
 
         const rand = Math.random();
         if (rand < 0.1) {
-          // 10% chance per interval to send a fake reaction
           const emojis = ['🔥', '❤️', '🎉', '👏', '🎵'];
           io.to(roomCode).emit('receive_reaction', { emoji: emojis[Math.floor(Math.random() * emojis.length)], id: Math.random() });
         } else if (rand < 0.15) {
-          // 5% chance to send a fake chat message
           const room = await Room.findOne({ code: roomCode });
           if (room) {
             const botName = BOT_NAMES[Math.floor(Math.random() * BOT_NAMES.length)];
@@ -233,7 +318,6 @@ module.exports = (io) => {
             io.to(roomCode).emit('receive_chat', msg);
           }
         } else if (rand > 0.95) {
-            // 5% chance to simulate a fake user joining temporarily
             const fakeName = BOT_NAMES[Math.floor(Math.random() * BOT_NAMES.length)];
             io.to(roomCode).emit('bot_joined', { username: fakeName });
         }
@@ -241,5 +325,5 @@ module.exports = (io) => {
     } catch(err) {
       console.error(err);
     }
-  }, 5000); // Check every 5 seconds
+  }, 5000);
 };

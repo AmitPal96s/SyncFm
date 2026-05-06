@@ -3,7 +3,7 @@ const mongoose = require('mongoose');
 const RoomSchema = new mongoose.Schema({
   code: { type: String, required: true, unique: true },
   name: { type: String, required: true },
-  adminUsername: { type: String, required: true, default: 'Admin' },
+  host: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
   currentTrackIndex: { type: Number, default: 0 },
   playbackPosition: { type: Number, default: 0 },
   isPlaying: { type: Boolean, default: false },

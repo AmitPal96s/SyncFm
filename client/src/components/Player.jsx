@@ -33,6 +33,9 @@ export default function Player({ roomData, code, isExpanded, setIsExpanded, onQu
   const isSyncing = useRef(false);
   const progressInterval = useRef(null);
   const isPlayingRef = useRef(isPlaying);
+  const targetPlayTimeout = useRef(null);
+  const guestLocalPauseRef = useRef(false);
+  const lastHostUpdateRef = useRef({ position: 0, timestamp: Date.now(), isPlaying: false });
 
   useEffect(() => {
     isPlayingRef.current = isPlaying;
@@ -80,40 +83,72 @@ export default function Player({ roomData, code, isExpanded, setIsExpanded, onQu
   useEffect(() => {
     if (!socket) return;
 
-    socket.on('sync_playback', (data) => {
-      isSyncing.current = true;
-      if (data.currentTrackIndex !== currentIndex) setCurrentIndex(data.currentTrackIndex);
+    socket.on('play', ({ currentTime, serverTimestamp, currentTrackIndex }) => {
+      guestLocalPauseRef.current = false; // Host played, auto-resume guest
+      if (currentTrackIndex !== undefined && currentTrackIndex !== currentIndex) setCurrentIndex(currentTrackIndex);
+      const latency = (Date.now() - serverTimestamp) / 1000;
+      setIsPlaying(true);
+      seekMedia(queue[currentTrackIndex]?.type || currentTrack?.type, currentTime + latency);
+      playOrPauseMedia(queue[currentTrackIndex]?.type || currentTrack?.type, true);
+      setSyncStatus('In Sync ✅');
+    });
 
-      const track = queue[data.currentTrackIndex] || currentTrack;
+    socket.on('pause', ({ currentTime }) => {
+      setIsPlaying(false);
+      seekMedia(currentTrack?.type, currentTime);
+      playOrPauseMedia(currentTrack?.type, false);
+      setSyncStatus('Paused ⏸️');
+    });
 
-      if (data.isPlaying !== isPlaying) {
-        // If guest is already paused locally, some users prefer to stay paused.
-        // But the requirement says 'Automatically synchronize'. 
-        // We'll sync isPlaying state only on track changes or if the guest is 'Live'.
-        setIsPlaying(data.isPlaying);
-        playOrPauseMedia(track.type, data.isPlaying);
+    socket.on('seek', ({ currentTime, serverTimestamp }) => {
+      const latency = (Date.now() - serverTimestamp) / 1000;
+      seekMedia(currentTrack?.type, currentTime + latency);
+      setProgress(currentTime + latency);
+    });
+
+    socket.on('replay', ({ currentTime, serverTimestamp, currentTrackIndex }) => {
+      if (currentTrackIndex !== undefined && currentTrackIndex !== currentIndex) setCurrentIndex(currentTrackIndex);
+      const latency = (Date.now() - serverTimestamp) / 1000;
+      setIsPlaying(true);
+      seekMedia(queue[currentTrackIndex]?.type || currentTrack?.type, Math.max(0, currentTime + latency));
+      playOrPauseMedia(queue[currentTrackIndex]?.type || currentTrack?.type, true);
+      setSyncStatus('In Sync ✅');
+    });
+
+    socket.on('sync-state', ({ isPlaying: serverIsPlaying, currentTime, serverTimestamp, currentTrackIndex }) => {
+      if (guestLocalPauseRef.current) return; // Ignore syncs if guest is locally paused
+
+      if (currentTrackIndex !== undefined && currentTrackIndex !== currentIndex) {
+        setCurrentIndex(currentTrackIndex);
+      }
+      
+      const latency = (Date.now() - serverTimestamp) / 1000;
+      const expectedTime = currentTime + latency;
+      
+      let localTime = progress;
+      if ((currentTrack?.type === 'mock' || currentTrack?.type === 'audio' || !currentTrack?.type) && audioRef.current) {
+        localTime = audioRef.current.currentTime;
+      }
+      if (currentTrack?.type === 'youtube' && ytPlayerRef.current) {
+        try { localTime = ytPlayerRef.current.getCurrentTime() || 0; } catch (e) {}
       }
 
-      // Drift correction using latency compensation
-      let localTime = 0;
-      if ((track.type === 'mock' || track.type === 'audio' || !track.type) && audioRef.current) localTime = audioRef.current.currentTime;
-      if (track.type === 'youtube' && ytPlayerRef.current) localTime = ytPlayerRef.current.getCurrentTime() || 0;
-
-      // Compensate for network latency
-      const expectedPosition = data.playbackPosition + ((Date.now() - (data.timestamp || Date.now())) / 1000);
-      const drift = Math.abs(localTime - expectedPosition);
-
-      // We only correct if drift is notable (> 1.5s), avoiding micro-stutters
-      if (drift > 1.5 && data.isPlaying) {
-        setSyncStatus('Syncing...');
-        seekMedia(track.type, expectedPosition);
-        setTimeout(() => setSyncStatus('In Sync ✅'), 1000);
-      } else {
-        setSyncStatus('In Sync ✅');
+      const drift = Math.abs(localTime - expectedTime);
+      
+      if (drift > 1.5) {
+        seekMedia(currentTrack?.type, expectedTime);
+        setProgress(expectedTime);
       }
-
-      setProgress(expectedPosition);
-      setTimeout(() => { isSyncing.current = false; }, 300);
+      
+      if (serverIsPlaying && !isPlaying) {
+        setIsPlaying(true);
+        playOrPauseMedia(currentTrack?.type, true);
+      } else if (!serverIsPlaying && isPlaying) {
+        setIsPlaying(false);
+        playOrPauseMedia(currentTrack?.type, false);
+      }
+      
+      setSyncStatus(serverIsPlaying ? 'In Sync ✅' : 'Paused ⏸️');
     });
 
     socket.on('queue_updated', (newQueue) => {
@@ -121,10 +156,14 @@ export default function Player({ roomData, code, isExpanded, setIsExpanded, onQu
     });
 
     return () => {
-      socket.off('sync_playback');
+      socket.off('play');
+      socket.off('pause');
+      socket.off('seek');
+      socket.off('replay');
+      socket.off('sync-state');
       socket.off('queue_updated');
     };
-  }, [socket, currentIndex, isPlaying, currentTrack, queue]);
+  }, [socket, currentIndex, isPlaying, currentTrack, queue, progress]);
 
   // Update visual progress local
   useEffect(() => {
@@ -149,44 +188,24 @@ export default function Player({ roomData, code, isExpanded, setIsExpanded, onQu
     return () => clearInterval(progressInterval.current);
   }, [isPlaying, currentTrack]);
 
-  // Active Host Heartbeat
+  // Periodic drift correction (Guests only)
   useEffect(() => {
-    if (!isAdmin || !socket) return;
-    
-    // Broadcast status every 2 seconds
+    if (isAdmin || !socket) return;
     const interval = setInterval(() => {
-      let localTime = progress;
-      if (currentTrack?.type === 'youtube' && ytPlayerRef.current) {
-        try { localTime = ytPlayerRef.current.getCurrentTime() || 0; } catch(e){}
-      } else if (audioRef.current) {
-        localTime = audioRef.current.currentTime;
-      }
-      
-      socket.emit('player_update', {
-        code,
-        currentTrackIndex: currentIndex,
-        playbackPosition: localTime,
-        isPlaying
-      });
-    }, 2000);
-
+      socket.emit('request-sync', { roomId: code });
+    }, 5000);
     return () => clearInterval(interval);
-  }, [isAdmin, socket, isPlaying, progress, currentIndex, currentTrack]);
+  }, [isAdmin, socket, code]);
 
-  const broadcastUpdate = (updates) => {
-    if (!isAdmin || !socket || isSyncing.current) return;
-
+  const getLocalTime = () => {
     let localTime = progress;
-    if ((currentTrack.type === 'mock' || currentTrack.type === 'audio' || !currentTrack.type) && audioRef.current) localTime = audioRef.current.currentTime;
-    if (currentTrack.type === 'youtube' && ytPlayerRef.current) localTime = ytPlayerRef.current.getCurrentTime() || 0;
-
-    socket.emit('player_update', {
-      code,
-      currentTrackIndex: currentIndex,
-      playbackPosition: localTime,
-      isPlaying,
-      ...updates
-    });
+    if ((currentTrack?.type === 'mock' || currentTrack?.type === 'audio' || !currentTrack?.type) && audioRef.current) {
+      localTime = audioRef.current.currentTime;
+    }
+    if (currentTrack?.type === 'youtube' && ytPlayerRef.current && typeof ytPlayerRef.current.getCurrentTime === 'function') {
+      localTime = ytPlayerRef.current.getCurrentTime() || 0;
+    }
+    return localTime;
   };
 
   const playOrPauseMedia = (type, state) => {
@@ -211,17 +230,38 @@ export default function Player({ roomData, code, isExpanded, setIsExpanded, onQu
 
   const togglePlay = (e) => {
     if (e) e.stopPropagation();
+    if (!socket) return; 
+
     const nextState = !isPlaying;
-    setIsPlaying(nextState);
-    playOrPauseMedia(currentTrack?.type, nextState);
-    
-    // Only the host broadcasts this to the entire room
+    const currentTime = getLocalTime();
+
     if (isAdmin) {
-      broadcastUpdate({ isPlaying: nextState });
+      if (nextState) {
+        socket.emit('play', { currentTime, currentTrackIndex: currentIndex });
+      } else {
+        socket.emit('pause', { currentTime });
+      }
+      setIsPlaying(nextState);
+      playOrPauseMedia(currentTrack?.type, nextState);
+    } else {
+      // Guest local toggle
+      if (nextState) {
+        // Resuming: unlock pause and request immediate authoritative sync
+        guestLocalPauseRef.current = false;
+        setSyncStatus('Syncing... ⏳');
+        socket.emit('request-sync', { roomId: code });
+      } else {
+        // Pausing: lock local pause and stop media
+        guestLocalPauseRef.current = true;
+        setIsPlaying(false);
+        playOrPauseMedia(currentTrack?.type, false);
+        setSyncStatus('Local Pause ⏸️');
+      }
     }
   };
 
   const playTrack = (index) => {
+    if (!isAdmin || !socket) return;
     const nextTrack = queue[index];
     if (!nextTrack) return;
 
@@ -229,34 +269,32 @@ export default function Player({ roomData, code, isExpanded, setIsExpanded, onQu
     setIsPlaying(true);
     setProgress(0);
 
-    // Attempt seek and play if the player is already ready
     seekMedia(nextTrack.type, 0);
     playOrPauseMedia(nextTrack.type, true);
 
-    broadcastUpdate({ currentTrackIndex: index, isPlaying: true, playbackPosition: 0 });
+    socket.emit('replay', { currentTrackIndex: index });
   };
 
   const nextTrack = (e) => {
     if (e) e.stopPropagation();
+    if (!isAdmin) return;
     const next = (currentIndex + 1) % queue.length;
     playTrack(next);
   };
 
   const prevTrack = (e) => {
     if (e) e.stopPropagation();
+    if (!isAdmin) return;
     const prev = (currentIndex - 1 + queue.length) % queue.length;
     playTrack(prev);
   };
 
   const handleSeek = (e) => {
+    if (!isAdmin || !socket) return;
     const newTime = parseFloat(e.target.value);
     setProgress(newTime);
-    seekMedia(currentTrack.type, newTime);
-    
-    // Only host broadcasts seeks
-    if (isAdmin) {
-      broadcastUpdate({ playbackPosition: newTime });
-    }
+    seekMedia(currentTrack?.type, newTime);
+    socket.emit('seek', { currentTime: newTime });
   };
 
   const formatTime = (secs) => {
@@ -518,6 +556,7 @@ export default function Player({ roomData, code, isExpanded, setIsExpanded, onQu
                 <button 
                   onClick={togglePlay}
                   className="w-20 h-20 flex items-center justify-center bg-zinc-800 text-zinc-200 rounded-full hover:bg-zinc-700 transition-all border border-white/5 shadow-xl"
+                  title="Local Play/Pause"
                 >
                   {isPlaying ? <Pause size={36} className="fill-current" /> : <Play size={36} className="fill-current ml-1" />}
                 </button>

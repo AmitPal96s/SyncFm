@@ -12,12 +12,14 @@ import ToastContainer from '../components/ToastContainer';
 
 export default function Room() {
   const { code } = useParams();
-  const [searchParams] = useSearchParams();
-  const [username] = useState(
-    searchParams.get('username') || 
-    localStorage.getItem('syncfm_username') || 
-    'Anonymous'
-  );
+  const [username, setUsername] = useState(() => {
+    let stored = localStorage.getItem('syncfm_username');
+    if (!stored || stored === 'Anonymous') {
+      stored = 'Guest_' + Math.floor(1000 + Math.random() * 9000);
+      localStorage.setItem('syncfm_username', stored);
+    }
+    return stored;
+  });
   const [toasts, setToasts] = useState([]);
   const navigate = useNavigate();
   const socket = useSocket();
@@ -29,6 +31,10 @@ export default function Room() {
   // UI States
   const [activeTab, setActiveTab] = useState('explore'); // 'explore' or 'social'
   const [isExpanded, setIsExpanded] = useState(false);
+  
+  const [role, setRole] = useState(null);
+  const [hostId, setHostId] = useState(null);
+  const isAdmin = role === 'host';
   
   // Lifted Player Queue State
   const [playerState, setPlayerState] = useState({ queue: [], currentIndex: 0, playTrack: null });
@@ -63,23 +69,50 @@ export default function Room() {
     fetchRoom();
   }, [code]);
 
+  const getUserIdFromToken = () => {
+    const token = localStorage.getItem('token');
+    if (!token) return null;
+    try {
+      return JSON.parse(atob(token.split('.')[1])).id;
+    } catch (e) { return null; }
+  };
+
   useEffect(() => {
     if (socket && roomData) {
       const avatar = `https://api.dicebear.com/7.x/avataaars/svg?seed=${username}`;
-      socket.emit('join_room', { code, username, avatar });
+      const userId = getUserIdFromToken();
+      socket.emit('join-room', { roomCode: code, userId, username, avatar });
+      
+      socket.on('room-joined', ({ role, hostId, playbackState }) => {
+        setRole(role);
+        setHostId(hostId);
+      });
+      
+      return () => socket.off('room-joined');
     }
   }, [socket, roomData, code, username]);
 
   useEffect(() => {
     if (!socket) return;
     
-    socket.on('user_joined', (user) => {
+    const handleConnect = () => {
+      const userId = getUserIdFromToken();
+      const avatar = `https://api.dicebear.com/7.x/avataaars/svg?seed=${username}`;
+      socket.emit('join-room', { roomCode: code, userId, username, avatar });
+    };
+
+    const handleDisconnect = () => {
+      setRole(null);
+    };
+
+    socket.on('connect', handleConnect);
+    socket.on('disconnect', handleDisconnect);
+
+    socket.on('user-joined', (user) => {
       addToast(user.username, user.avatar, 'join');
     });
 
     socket.on('user_left', (socketId) => {
-      // We need the username/avatar for the toast, but user_left usually only has socketId.
-      // For a production app, we'd find the user in our local attendees list.
       addToast('Someone', 'https://api.dicebear.com/7.x/avataaars/svg?seed=Left', 'leave');
     });
 
@@ -89,13 +122,13 @@ export default function Room() {
     });
 
     return () => {
-      socket.off('user_joined');
+      socket.off('connect', handleConnect);
+      socket.off('disconnect', handleDisconnect);
+      socket.off('user-joined');
       socket.off('user_left');
       socket.off('kicked');
     };
-  }, [socket, navigate]);
-
-  const isAdmin = roomData?.adminUsername === username;
+  }, [socket, navigate, code, username]);
 
   const copyCode = () => {
     navigator.clipboard.writeText(code);
@@ -331,7 +364,7 @@ export default function Room() {
         {/* SOCIAL TAB */}
         <div className={`absolute inset-0 flex flex-col lg:flex-row transition-opacity duration-300 ${activeTab === 'social' ? 'opacity-100 z-10' : 'opacity-0 z-0 pointer-events-none'}`}>
           <div className="w-full lg:w-1/3 min-h-[150px] lg:h-full border-b lg:border-b-0 lg:border-r border-white/5 flex flex-col bg-black/40">
-            <Sidebar code={code} isAdmin={isAdmin} adminUsername={username} />
+            <Sidebar code={code} isAdmin={isAdmin} hostId={hostId} />
           </div>
           <div className="flex-1 flex flex-col h-full bg-black/20 pb-16 lg:pb-0">
             <Chat code={code} username={username} />

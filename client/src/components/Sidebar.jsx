@@ -3,18 +3,18 @@ import { useSocket } from '../context/SocketContext';
 import { Users, X } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 
-export default function Sidebar({ code, isAdmin, adminUsername }) {
+export default function Sidebar({ code, isAdmin, hostId }) {
   const [listeners, setListeners] = useState([]);
   const socket = useSocket();
 
   useEffect(() => {
     if (!socket) return;
 
-    socket.on('room_state', (state) => {
+    socket.on('room-joined', (state) => {
       setListeners(state.attendees || []);
     });
 
-    socket.on('user_joined', (user) => {
+    socket.on('user-joined', (user) => {
       setListeners(prev => {
         // Prevent dupes
         if (prev.find(l => l.socketId === user.socketId)) return prev;
@@ -36,8 +36,8 @@ export default function Sidebar({ code, isAdmin, adminUsername }) {
     });
 
     return () => {
-      socket.off('room_state');
-      socket.off('user_joined');
+      socket.off('room-joined');
+      socket.off('user-joined');
       socket.off('user_left');
       socket.off('bot_joined');
     };
@@ -49,7 +49,7 @@ export default function Sidebar({ code, isAdmin, adminUsername }) {
 
   const handleKick = (targetSocketId) => {
     if (socket && window.confirm('Are you sure you want to kick this user from the party?')) {
-      socket.emit('kick_user', { code, targetSocketId, adminUsername });
+      socket.emit('kick_user', { code, targetSocketId });
     }
   };
 
@@ -89,11 +89,11 @@ export default function Sidebar({ code, isAdmin, adminUsername }) {
                   />
                 </div>
                 <span className="text-sm font-medium text-zinc-200 truncate flex-1">
-                  {l.username} {l.username === adminUsername && <span className="opacity-50 text-xs ml-1">(Host)</span>}
+                  {l.username} {l.userId && l.userId === hostId && <span className="opacity-50 text-xs ml-1">(Host)</span>}
                 </span>
               </div>
               
-              {isAdmin && l.username !== adminUsername && socket && !l.socketId?.startsWith('bot_') && (
+              {isAdmin && (!l.userId || l.userId !== hostId) && socket && !l.socketId?.startsWith('bot_') && (
                 <button 
                   onClick={() => handleKick(l.socketId)}
                   className="opacity-0 group-hover:opacity-100 p-1.5 transition-all text-red-400 hover:bg-red-500/20 hover:text-red-300 rounded-md shrink-0 focus:opacity-100 focus:outline-none"

@@ -42,26 +42,40 @@ export default function Landing() {
     e.preventDefault();
     if (!username || !roomCode) return;
     localStorage.setItem('syncfm_username', username);
-    navigate(`/room/${roomCode}?username=${encodeURIComponent(username)}`);
+    navigate(`/room/${roomCode}`);
   };
 
   const handleCreate = async (e) => {
     e.preventDefault();
     if (!username || !roomName) return;
+    
+    const token = localStorage.getItem('token');
+    if (!token) {
+      toast.error('You must be logged in to create a room.');
+      setIsAuthModalOpen(true);
+      return;
+    }
+
     setIsLoading(true);
     try {
       const response = await fetch(`${import.meta.env.VITE_BACKEND_URL || 'http://localhost:5000'}/api/rooms`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
+        },
         body: JSON.stringify({ username, roomName })
       });
       const data = await response.json();
       if (data.success) {
         localStorage.setItem('syncfm_username', username);
-        navigate(`/room/${data.room.code}?username=${encodeURIComponent(username)}`);
+        navigate(`/room/${data.room.code}`);
+      } else {
+        toast.error(data.msg || data.error || 'Failed to create room');
       }
     } catch (err) {
       console.error(err);
+      toast.error('Network error while creating room');
     } finally {
       setIsLoading(false);
     }

@@ -13,6 +13,7 @@ const setupRoomSockets = require('./sockets/roomHandler');
 
 const authRoutes = require('./routes/auth');
 const userRoutes = require('./routes/users');
+const auth = require('./middleware/auth');
 
 const app = express();
 app.use(cors({
@@ -87,15 +88,15 @@ mongoose.connect(process.env.MONGO_URI || 'mongodb://127.0.0.1:27017/syncfm')
   .then(() => console.log('MongoDB connected'))
   .catch(err => console.log('MongoDB error:', err));
 
-app.post('/api/rooms', async (req, res) => {
+app.post('/api/rooms', auth, async (req, res) => {
   try {
-    const { username, roomName } = req.body;
+    const { roomName } = req.body;
     const code = Math.floor(1000 + Math.random() * 9000).toString();
     
     const newRoom = new Room({
       code,
       name: roomName || 'My Sync.fm Room',
-      adminUsername: username,
+      host: req.user.id,
       queue: DEFAULT_QUEUE
     });
     
