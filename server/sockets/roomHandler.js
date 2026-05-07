@@ -61,7 +61,7 @@ module.exports = (io) => {
           }
 
           const state = roomsState[roomCode].playbackState;
-          const elapsed = state.isPlaying ? (Date.now() - state.lastUpdated) / 1000 : 0;
+          const elapsed = state.isPlaying ? Math.max(0, (Date.now() - state.lastUpdated) / 1000) : 0;
           const adjustedCurrentTime = state.currentTime + elapsed;
 
           socket.emit('room-joined', {
@@ -103,10 +103,10 @@ module.exports = (io) => {
         if (!roomsState[user.code]) roomsState[user.code] = { playbackState: {} };
         
         roomsState[user.code].playbackState = {
-          isPlaying: false, // Wait until countdown ends
+          isPlaying: true, // State is playing
           currentTime,
           scheduledPlayAt: playAt,
-          lastUpdated: now,
+          lastUpdated: playAt, // Start counting elapsed time from playAt
           currentTrackIndex: currentTrackIndex !== undefined ? currentTrackIndex : roomsState[user.code].playbackState.currentTrackIndex
         };
 
@@ -116,7 +116,7 @@ module.exports = (io) => {
           currentTrackIndex: roomsState[user.code].playbackState.currentTrackIndex
         });
 
-        await Room.updateOne({ code: user.code }, { isPlaying: false, playbackPosition: currentTime });
+        await Room.updateOne({ code: user.code }, { isPlaying: true, playbackPosition: currentTime });
       } catch (err) { console.error(err); }
     });
 
@@ -166,7 +166,7 @@ module.exports = (io) => {
       if (!user || !roomsState[user.code]) return;
       
       const state = roomsState[user.code].playbackState;
-      const elapsed = state.isPlaying ? (Date.now() - state.lastUpdated) / 1000 : 0;
+      const elapsed = state.isPlaying ? Math.max(0, (Date.now() - state.lastUpdated) / 1000) : 0;
       
       socket.emit('sync-state', {
         ...state,
