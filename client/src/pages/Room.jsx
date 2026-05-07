@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useRef } from 'react';
 import { useParams, useSearchParams, useNavigate } from 'react-router-dom';
 import { useSocket } from '../context/SocketContext';
 import { motion, AnimatePresence } from 'framer-motion';
@@ -35,6 +35,7 @@ export default function Room() {
   const [role, setRole] = useState(null);
   const [hostId, setHostId] = useState(null);
   const isAdmin = role === 'host';
+  const clockOffsetRef = useRef(0);
   
   // Lifted Player Queue State
   const [playerState, setPlayerState] = useState({ queue: [], currentIndex: 0, playTrack: null });
@@ -81,7 +82,15 @@ export default function Room() {
     if (socket && roomData) {
       const avatar = `https://api.dicebear.com/7.x/avataaars/svg?seed=${username}`;
       const userId = getUserIdFromToken();
-      socket.emit('join-room', { roomCode: code, userId, username, avatar });
+
+      const t0 = Date.now();
+      socket.emit('ping-sync', { clientTime: t0 });
+      socket.once('pong-sync', ({ serverTime }) => {
+        const rtt = Date.now() - t0;
+        clockOffsetRef.current = serverTime - t0 - rtt / 2;
+        
+        socket.emit('join-room', { roomCode: code, userId, username, avatar });
+      });
       
       socket.on('room-joined', ({ role, hostId, playbackState }) => {
         setRole(role);
@@ -381,6 +390,7 @@ export default function Room() {
         setIsExpanded={setIsExpanded}
         onQueueUpdate={setPlayerState}
         isAdmin={isAdmin}
+        clockOffsetRef={clockOffsetRef}
       />
       
     </div>

@@ -19,8 +19,15 @@ module.exports = (io) => {
   // In-memory playback state
   const roomsState = {};
 
+  const SYNC_DELAY_MS = 400;
+
   io.on('connection', (socket) => {
     console.log(`User connected: ${socket.id}`);
+
+    // Clock calibration ping
+    socket.on('ping-sync', ({ clientTime }) => {
+      socket.emit('pong-sync', { clientTime, serverTime: Date.now() });
+    });
 
     // Join a specific room
     socket.on('join-room', async ({ roomCode, userId, username, avatar }) => {
@@ -47,7 +54,8 @@ module.exports = (io) => {
                 isPlaying: room.isPlaying,
                 currentTime: room.playbackPosition,
                 lastUpdated: Date.now(),
-                currentTrackIndex: room.currentTrackIndex
+                currentTrackIndex: room.currentTrackIndex,
+                scheduledPlayAt: null
               }
             };
           }
@@ -81,8 +89,7 @@ module.exports = (io) => {
       }
     });
 
-    // Playback explicit controls
-    socket.on('play', async ({ currentTime, currentTrackIndex }) => {
+    socket.on('scheduled-replay', async ({ currentTime = 0, currentTrackIndex }) => {
       const user = users[socket.id];
       if (!user) return;
       
@@ -91,22 +98,25 @@ module.exports = (io) => {
         if (!room || room.host.toString() !== user.userId?.toString()) return; // Host only
 
         const now = Date.now();
+        const playAt = now + SYNC_DELAY_MS;
+        
         if (!roomsState[user.code]) roomsState[user.code] = { playbackState: {} };
         
         roomsState[user.code].playbackState = {
-          isPlaying: true,
+          isPlaying: false, // Wait until countdown ends
           currentTime,
+          scheduledPlayAt: playAt,
           lastUpdated: now,
           currentTrackIndex: currentTrackIndex !== undefined ? currentTrackIndex : roomsState[user.code].playbackState.currentTrackIndex
         };
 
-        io.to(user.code).emit('play', { 
+        io.to(user.code).emit('scheduled-replay', { 
           currentTime, 
-          serverTimestamp: now,
+          playAt,
           currentTrackIndex: roomsState[user.code].playbackState.currentTrackIndex
         });
 
-        await Room.updateOne({ code: user.code }, { isPlaying: true, playbackPosition: currentTime });
+        await Room.updateOne({ code: user.code }, { isPlaying: false, playbackPosition: currentTime });
       } catch (err) { console.error(err); }
     });
 
@@ -123,6 +133,7 @@ module.exports = (io) => {
           roomsState[user.code].playbackState.isPlaying = false;
           roomsState[user.code].playbackState.currentTime = currentTime;
           roomsState[user.code].playbackState.lastUpdated = now;
+          roomsState[user.code].playbackState.scheduledPlayAt = null;
         }
 
         io.to(user.code).emit('pause', { currentTime });
@@ -149,32 +160,6 @@ module.exports = (io) => {
       } catch (err) { console.error(err); }
     });
 
-    socket.on('replay', async ({ currentTrackIndex }) => {
-      const user = users[socket.id];
-      if (!user) return;
-      
-      try {
-        const room = await Room.findOne({ code: user.code });
-        if (!room || room.host.toString() !== user.userId?.toString()) return; // Host only
-
-        const now = Date.now();
-        if (!roomsState[user.code]) roomsState[user.code] = { playbackState: {} };
-        
-        roomsState[user.code].playbackState = {
-          isPlaying: true,
-          currentTime: 0,
-          lastUpdated: now,
-          currentTrackIndex: currentTrackIndex !== undefined ? currentTrackIndex : roomsState[user.code].playbackState.currentTrackIndex
-        };
-
-        io.to(user.code).emit('replay', { 
-          currentTime: 0, 
-          serverTimestamp: now,
-          currentTrackIndex: roomsState[user.code].playbackState.currentTrackIndex
-        });
-        await Room.updateOne({ code: user.code }, { isPlaying: true, playbackPosition: 0, currentTrackIndex: roomsState[user.code].playbackState.currentTrackIndex });
-      } catch (err) { console.error(err); }
-    });
 
     socket.on('request-sync', ({ roomId }) => {
       const user = users[socket.id];

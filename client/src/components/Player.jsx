@@ -15,7 +15,7 @@ import {
 import { useSocket } from '../context/SocketContext';
 import EqualizerBars from './EqualizerBars';
 
-export default function Player({ roomData, code, isExpanded, setIsExpanded, onQueueUpdate, isAdmin }) {
+export default function Player({ roomData, code, isExpanded, setIsExpanded, onQueueUpdate, isAdmin, clockOffsetRef }) {
   const socket = useSocket();
   const shouldReduceMotion = useReducedMotion();
   const audioRef = useRef(null);
@@ -28,6 +28,8 @@ export default function Player({ roomData, code, isExpanded, setIsExpanded, onQu
   const [progress, setProgress] = useState(0);
   const [syncStatus, setSyncStatus] = useState('In Sync ✅');
   const [spotifyError, setSpotifyError] = useState('');
+  const [isScheduled, setIsScheduled] = useState(false);
+  const [autoplayBlocked, setAutoplayBlocked] = useState(false);
 
   const currentTrack = queue[currentIndex] || {};
   const isSyncing = useRef(false);
@@ -36,6 +38,7 @@ export default function Player({ roomData, code, isExpanded, setIsExpanded, onQu
   const targetPlayTimeout = useRef(null);
   const guestLocalPauseRef = useRef(false);
   const lastHostUpdateRef = useRef({ position: 0, timestamp: Date.now(), isPlaying: false });
+  const scheduleTimerRef = useRef(null);
 
   useEffect(() => {
     isPlayingRef.current = isPlaying;
@@ -83,18 +86,37 @@ export default function Player({ roomData, code, isExpanded, setIsExpanded, onQu
   useEffect(() => {
     if (!socket) return;
 
-    socket.on('play', ({ currentTime, serverTimestamp, currentTrackIndex }) => {
-      guestLocalPauseRef.current = false; // Host played, auto-resume guest
+    socket.on('scheduled-replay', ({ currentTime, playAt, currentTrackIndex }) => {
+      guestLocalPauseRef.current = false;
       if (currentTrackIndex !== undefined && currentTrackIndex !== currentIndex) setCurrentIndex(currentTrackIndex);
-      const latency = (Date.now() - serverTimestamp) / 1000;
-      setIsPlaying(true);
-      seekMedia(queue[currentTrackIndex]?.type || currentTrack?.type, currentTime + latency);
-      playOrPauseMedia(queue[currentTrackIndex]?.type || currentTrack?.type, true);
-      setSyncStatus('In Sync ✅');
+      
+      if (scheduleTimerRef.current) clearTimeout(scheduleTimerRef.current);
+      
+      seekMedia(queue[currentTrackIndex]?.type || currentTrack?.type, currentTime);
+      playOrPauseMedia(queue[currentTrackIndex]?.type || currentTrack?.type, false);
+      setIsPlaying(false);
+      setIsScheduled(true);
+      setSyncStatus('Syncing... ⏳');
+
+      const delay = playAt - (Date.now() + (clockOffsetRef?.current || 0));
+
+      scheduleTimerRef.current = setTimeout(async () => {
+        try {
+          setIsPlaying(true);
+          await playOrPauseMedia(queue[currentTrackIndex]?.type || currentTrack?.type, true);
+          setAutoplayBlocked(false);
+        } catch (err) {
+          setAutoplayBlocked(true);
+        }
+        setIsScheduled(false);
+        setSyncStatus('In Sync ✅');
+      }, Math.max(0, delay));
     });
 
     socket.on('pause', ({ currentTime }) => {
+      if (scheduleTimerRef.current) clearTimeout(scheduleTimerRef.current);
       setIsPlaying(false);
+      setIsScheduled(false);
       seekMedia(currentTrack?.type, currentTime);
       playOrPauseMedia(currentTrack?.type, false);
       setSyncStatus('Paused ⏸️');
@@ -106,32 +128,41 @@ export default function Player({ roomData, code, isExpanded, setIsExpanded, onQu
       setProgress(currentTime + latency);
     });
 
-    socket.on('replay', ({ currentTime, serverTimestamp, currentTrackIndex }) => {
+    socket.on('sync-state', ({ isPlaying: serverIsPlaying, currentTime, serverTimestamp, currentTrackIndex, scheduledPlayAt }) => {
+      if (guestLocalPauseRef.current) return;
+
       if (currentTrackIndex !== undefined && currentTrackIndex !== currentIndex) setCurrentIndex(currentTrackIndex);
-      const latency = (Date.now() - serverTimestamp) / 1000;
-      setIsPlaying(true);
-      seekMedia(queue[currentTrackIndex]?.type || currentTrack?.type, Math.max(0, currentTime + latency));
-      playOrPauseMedia(queue[currentTrackIndex]?.type || currentTrack?.type, true);
-      setSyncStatus('In Sync ✅');
-    });
-
-    socket.on('sync-state', ({ isPlaying: serverIsPlaying, currentTime, serverTimestamp, currentTrackIndex }) => {
-      if (guestLocalPauseRef.current) return; // Ignore syncs if guest is locally paused
-
-      if (currentTrackIndex !== undefined && currentTrackIndex !== currentIndex) {
-        setCurrentIndex(currentTrackIndex);
-      }
       
       const latency = (Date.now() - serverTimestamp) / 1000;
       const expectedTime = currentTime + latency;
+
+      if (scheduledPlayAt && scheduledPlayAt > Date.now() + (clockOffsetRef?.current || 0)) {
+        // Scheduled playback is pending
+        if (scheduleTimerRef.current) clearTimeout(scheduleTimerRef.current);
+        seekMedia(currentTrack?.type, currentTime);
+        playOrPauseMedia(currentTrack?.type, false);
+        setIsPlaying(false);
+        setIsScheduled(true);
+        setSyncStatus('Syncing... ⏳');
+
+        const delay = scheduledPlayAt - (Date.now() + (clockOffsetRef?.current || 0));
+        scheduleTimerRef.current = setTimeout(async () => {
+          try {
+            setIsPlaying(true);
+            await playOrPauseMedia(currentTrack?.type, true);
+            setAutoplayBlocked(false);
+          } catch (e) {
+            setAutoplayBlocked(true);
+          }
+          setIsScheduled(false);
+          setSyncStatus('In Sync ✅');
+        }, Math.max(0, delay));
+        return;
+      }
       
       let localTime = progress;
-      if ((currentTrack?.type === 'mock' || currentTrack?.type === 'audio' || !currentTrack?.type) && audioRef.current) {
-        localTime = audioRef.current.currentTime;
-      }
-      if (currentTrack?.type === 'youtube' && ytPlayerRef.current) {
-        try { localTime = ytPlayerRef.current.getCurrentTime() || 0; } catch (e) {}
-      }
+      if ((currentTrack?.type === 'mock' || currentTrack?.type === 'audio' || !currentTrack?.type) && audioRef.current) localTime = audioRef.current.currentTime;
+      if (currentTrack?.type === 'youtube' && ytPlayerRef.current) try { localTime = ytPlayerRef.current.getCurrentTime() || 0; } catch (e) {}
 
       const drift = Math.abs(localTime - expectedTime);
       
@@ -143,12 +174,12 @@ export default function Player({ roomData, code, isExpanded, setIsExpanded, onQu
       if (serverIsPlaying && !isPlaying) {
         setIsPlaying(true);
         playOrPauseMedia(currentTrack?.type, true);
-      } else if (!serverIsPlaying && isPlaying) {
+      } else if (!serverIsPlaying && isPlaying && !isScheduled) {
         setIsPlaying(false);
         playOrPauseMedia(currentTrack?.type, false);
       }
       
-      setSyncStatus(serverIsPlaying ? 'In Sync ✅' : 'Paused ⏸️');
+      if (!isScheduled) setSyncStatus(serverIsPlaying ? 'In Sync ✅' : 'Paused ⏸️');
     });
 
     socket.on('queue_updated', (newQueue) => {
@@ -156,10 +187,9 @@ export default function Player({ roomData, code, isExpanded, setIsExpanded, onQu
     });
 
     return () => {
-      socket.off('play');
+      socket.off('scheduled-replay');
       socket.off('pause');
       socket.off('seek');
-      socket.off('replay');
       socket.off('sync-state');
       socket.off('queue_updated');
     };
@@ -237,12 +267,14 @@ export default function Player({ roomData, code, isExpanded, setIsExpanded, onQu
 
     if (isAdmin) {
       if (nextState) {
-        socket.emit('play', { currentTime, currentTrackIndex: currentIndex });
+        // Emit scheduled-replay, don't play locally yet
+        socket.emit('scheduled-replay', { currentTime, currentTrackIndex: currentIndex });
+        setSyncStatus('Syncing... ⏳');
       } else {
         socket.emit('pause', { currentTime });
+        setIsPlaying(false);
+        playOrPauseMedia(currentTrack?.type, false);
       }
-      setIsPlaying(nextState);
-      playOrPauseMedia(currentTrack?.type, nextState);
     } else {
       // Guest local toggle
       if (nextState) {
@@ -266,13 +298,12 @@ export default function Player({ roomData, code, isExpanded, setIsExpanded, onQu
     if (!nextTrack) return;
 
     setCurrentIndex(index);
-    setIsPlaying(true);
     setProgress(0);
-
     seekMedia(nextTrack.type, 0);
-    playOrPauseMedia(nextTrack.type, true);
+    setSyncStatus('Syncing... ⏳');
 
-    socket.emit('replay', { currentTrackIndex: index });
+    // Emit scheduled-replay for new track
+    socket.emit('scheduled-replay', { currentTrackIndex: index, currentTime: 0 });
   };
 
   const nextTrack = (e) => {
@@ -394,8 +425,9 @@ export default function Player({ roomData, code, isExpanded, setIsExpanded, onQu
                   whileHover={{ scale: 1.05 }}
                   whileTap={{ scale: 0.95 }}
                   onClick={(e) => { e.stopPropagation(); togglePlay(); }}
-                  className="w-10 h-10 flex items-center justify-center bg-white text-black rounded-full hover:scale-105 active:scale-95 transition-transform shadow-lg relative z-10"
+                  className="w-10 h-10 flex items-center justify-center bg-white text-black rounded-full hover:scale-105 active:scale-95 transition-transform shadow-lg relative z-10 overflow-hidden"
                 >
+                  {isScheduled && <div className="absolute inset-0 border-2 border-indigo-500 rounded-full animate-[spin_1s_linear_infinite] border-t-transparent pointer-events-none"></div>}
                   {isPlaying ? <Pause size={18} className="fill-current" /> : <Play size={18} className="fill-current ml-0.5" />}
                 </motion.button>
                 <motion.button
@@ -411,9 +443,10 @@ export default function Player({ roomData, code, isExpanded, setIsExpanded, onQu
               <div className="flex items-center space-x-3 flex-shrink-0 pr-2">
                 <button 
                   onClick={togglePlay}
-                  className="w-10 h-10 flex items-center justify-center bg-zinc-800 text-white rounded-full hover:bg-zinc-700 transition-colors"
+                  className="w-10 h-10 flex items-center justify-center bg-zinc-800 text-white rounded-full hover:bg-zinc-700 transition-colors relative overflow-hidden"
                   title="Local Play/Pause"
                 >
+                  {isScheduled && <div className="absolute inset-0 border-2 border-indigo-400 rounded-full animate-[spin_1s_linear_infinite] border-t-transparent pointer-events-none"></div>}
                   {isPlaying ? <Pause size={18} className="fill-current" /> : <Play size={18} className="fill-current ml-0.5" />}
                 </button>
                 <div className="hidden sm:flex flex-col items-end">
@@ -466,6 +499,16 @@ export default function Player({ roomData, code, isExpanded, setIsExpanded, onQu
               >
                 <img src={currentTrack?.albumArt} alt="" className="w-full h-full object-cover bg-zinc-900" />
                 <div className="absolute inset-0 bg-gradient-to-tr from-black/40 to-transparent pointer-events-none"></div>
+                {autoplayBlocked && (
+                  <div className="absolute inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm pointer-events-auto">
+                    <button 
+                      onClick={(e) => { e.stopPropagation(); playOrPauseMedia(currentTrack?.type, true); setAutoplayBlocked(false); }}
+                      className="px-6 py-3 bg-indigo-500 hover:bg-indigo-400 text-white rounded-full font-bold shadow-[0_0_20px_rgba(99,102,241,0.5)] transition-all animate-pulse"
+                    >
+                      Tap to Sync
+                    </button>
+                  </div>
+                )}
               </motion.div>
               
               {/* Overlay EQ bars */}
@@ -535,8 +578,9 @@ export default function Player({ roomData, code, isExpanded, setIsExpanded, onQu
                     whileHover={{ scale: 1.1 }}
                     whileTap={{ scale: 0.9 }}
                     onClick={(e) => { e.stopPropagation(); togglePlay(); }}
-                    className="relative z-10 w-20 h-20 flex items-center justify-center bg-white text-black rounded-full shadow-2xl shadow-indigo-500/20"
+                    className="relative z-10 w-20 h-20 flex items-center justify-center bg-white text-black rounded-full shadow-2xl shadow-indigo-500/20 overflow-hidden"
                   >
+                    {isScheduled && <div className="absolute inset-0 border-4 border-indigo-500 rounded-full animate-[spin_1s_linear_infinite] border-t-transparent pointer-events-none"></div>}
                     {isPlaying ? <Pause size={36} className="fill-current" /> : <Play size={36} className="fill-current ml-1" />}
                   </motion.button>
                 </div>
@@ -555,9 +599,10 @@ export default function Player({ roomData, code, isExpanded, setIsExpanded, onQu
               <div className="w-full flex flex-col items-center justify-center px-4 sm:px-8 text-zinc-500 pb-10">
                 <button 
                   onClick={togglePlay}
-                  className="w-20 h-20 flex items-center justify-center bg-zinc-800 text-zinc-200 rounded-full hover:bg-zinc-700 transition-all border border-white/5 shadow-xl"
+                  className="w-20 h-20 flex items-center justify-center bg-zinc-800 text-zinc-200 rounded-full hover:bg-zinc-700 transition-all border border-white/5 shadow-xl relative overflow-hidden"
                   title="Local Play/Pause"
                 >
+                  {isScheduled && <div className="absolute inset-0 border-4 border-indigo-400 rounded-full animate-[spin_1s_linear_infinite] border-t-transparent pointer-events-none"></div>}
                   {isPlaying ? <Pause size={36} className="fill-current" /> : <Play size={36} className="fill-current ml-1" />}
                 </button>
                 <div className="mt-8 flex flex-col items-center">
